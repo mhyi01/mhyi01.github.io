@@ -263,6 +263,33 @@ async function stats() {
   $('#stats').innerHTML = `<span class="dot" style="background:${!inV ? '#888' : good ? 'var(--green)' : 'var(--amber)'}"></span>` + lines.join('\n');
 }
 
+
+// --- 원격 진단: 연결 상태 요약(주소는 빼고 종류만)을 진단 채널로 보낸다 ---
+const DIAG = 'gyeote-call-diag-q7m3';
+const ERR = [];
+addEventListener('error', e => ERR.push(String(e.message).slice(0, 120)));
+async function report() {
+  const v = $('#remote'), o = {role: host ? 'a' : 'b', me: ME.slice(0, 6), c: (code || '').slice(0, 4), ua: UA.replace(/\(.*?\)/, '').slice(0, 90), D: Object.assign({}, D),
+    msg: ($('#status').dataset.msg || '').slice(0, 60), video: {paused: v.paused, rs: v.readyState, w: v.videoWidth, h: v.videoHeight, tracks: v.srcObject ? v.srcObject.getTracks().map(t => t.kind + ':' + t.readyState + (t.muted ? ':muted' : '')).join(',') : 'none'},
+    local: local ? local.getTracks().map(t => t.kind + ':' + t.readyState + ':' + (t.enabled ? 'on' : 'off')).join(',') : 'none', err: ERR.slice(-3)};
+  if (pc) {
+    o.pc = {sig: pc.signalingState, ice: pc.iceConnectionState, conn: pc.connectionState, gather: pc.iceGatheringState,
+      tx: pc.getTransceivers().map(t => (t.receiver.track && t.receiver.track.kind) + ':' + t.direction + '/' + t.currentDirection).join(',')};
+    try {
+      const r = await pc.getStats(); const lc = {}, rc = {}; let pair = null; const rtp = [];
+      r.forEach(x => {
+        if (x.type === 'local-candidate') lc[x.candidateType + '/' + x.protocol] = (lc[x.candidateType + '/' + x.protocol] || 0) + 1;
+        if (x.type === 'remote-candidate') rc[x.candidateType + '/' + x.protocol] = (rc[x.candidateType + '/' + x.protocol] || 0) + 1;
+        if (x.type === 'candidate-pair' && x.nominated) pair = {state: x.state, l: (r.get(x.localCandidateId) || {}).candidateType, r: (r.get(x.remoteCandidateId) || {}).candidateType, rtt: x.currentRoundTripTime, sent: x.bytesSent, recv: x.bytesReceived};
+        if (x.type === 'inbound-rtp' || x.type === 'outbound-rtp') rtp.push(x.type.slice(0, 2) + '-' + x.kind + ':' + (x.bytesReceived ?? x.bytesSent) + 'B' + (x.framesDecoded != null ? ' dec' + x.framesDecoded : '') + (x.framesEncoded != null ? ' enc' + x.framesEncoded : ''));
+      });
+      Object.assign(o, {lc, rc, pair, rtp});
+    } catch (e) { o.statsErr = e.message; }
+  }
+  try { fetch(SIG + '/' + DIAG, {method: 'POST', body: JSON.stringify(o)}); } catch (e) {}
+}
+setInterval(() => { if (local) report(); }, 8000);
+
 $('#unmute').onclick = () => playRemote();
 $('#mic').onclick = e => { const t = local.getAudioTracks()[0]; t.enabled = !t.enabled; e.target.classList.toggle('on', t.enabled); };
 $('#cam').onclick = e => { const t = local.getVideoTracks()[0]; t.enabled = !t.enabled; e.target.classList.toggle('on', t.enabled); };
