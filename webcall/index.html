@@ -30,6 +30,7 @@ button.big{font-size:22px;padding:20px 40px;background:var(--amber);color:#1a130
 <video id="remote" autoplay playsinline></video>
 <video id="local" autoplay playsinline muted></video>
 <div id="status"></div>
+<button id="unmute" class="big" hidden style="position:fixed;left:50%;top:40%;transform:translate(-50%,-50%);z-index:5">▶ 상대 화면·소리 켜기</button>
 <div id="stats" hidden></div>
 <div id="bar" hidden>
   <button id="mic" class="on">🎤 마이크</button>
@@ -151,14 +152,26 @@ function start() {
   say(host ? '상대를 기다리는 중…\n다른 기기에서 링크를 열고 [통화 시작]을 누르세요.' : '상대를 찾는 중…\n만든 쪽 기기에서 [통화 시작]을 눌렀는지 확인하세요.');
 }
 
+// 브라우저가 소리 있는 자동 재생을 막으면 [화면·소리 켜기] 단추를 보여 준다
+function playRemote() {
+  const v = $('#remote'); v.muted = false;
+  v.play().then(() => { $('#unmute').hidden = true; }).catch(() => { $('#unmute').hidden = false; });
+}
 function newPc() {
   pc && pc.close();
   const p = new RTCPeerConnection({iceServers: ICE});
   local.getTracks().forEach(t => p.addTrack(t, local));
-  p.ontrack = e => { $('#remote').srcObject = e.streams[0]; };
+  p.ontrack = e => {
+    const v = $('#remote');
+    let st = e.streams && e.streams[0];
+    if (!st) { st = v.srcObject instanceof MediaStream ? v.srcObject : new MediaStream(); st.addTrack(e.track); }
+    if (v.srcObject !== st) v.srcObject = st;
+    playRemote();
+  };
   p.oniceconnectionstatechange = () => {
-    diag('연결', p.iceConnectionState);
     if (p !== pc) return;
+    diag('연결', p.iceConnectionState);
+    if (connected()) playRemote();
     if (connected()) say('');
     if (p.iceConnectionState === 'failed') { say('연결 실패: 두 통신망 사이를 잇지 못했습니다. 다시 시도합니다…'); offerId = null; hello(true); }
   };
@@ -181,7 +194,8 @@ async function onMsg(m) {
     diag('상대', '찾음');
     if (host) { if (!connected()) hello(); return; }       // 만든 쪽: 대답만 한다(링크 쪽이 건다)
     if (connected() && peerId === m.from) return;
-    if (offerId && peerId === m.from && Date.now() - offerId.t < 12000) return;   // 방금 건 제안이 아직 진행 중
+    const busy = pc && ['new', 'checking'].includes(pc.iceConnectionState);
+    if (offerId && peerId === m.from && busy && Date.now() - offerId.t < 25000) return;   // 방금 건 연결이 아직 진행 중
     peerId = m.from; offerId = {id: Math.random().toString(36).slice(2, 8), t: Date.now()};
     say('연결하는 중…');
     const p = newPc();
@@ -249,6 +263,7 @@ async function stats() {
   $('#stats').innerHTML = `<span class="dot" style="background:${!inV ? '#888' : good ? 'var(--green)' : 'var(--amber)'}"></span>` + lines.join('\n');
 }
 
+$('#unmute').onclick = () => playRemote();
 $('#mic').onclick = e => { const t = local.getAudioTracks()[0]; t.enabled = !t.enabled; e.target.classList.toggle('on', t.enabled); };
 $('#cam').onclick = e => { const t = local.getVideoTracks()[0]; t.enabled = !t.enabled; e.target.classList.toggle('on', t.enabled); };
 $('#st').onclick = e => { const s = $('#stats'); s.hidden = !s.hidden; e.target.classList.toggle('on', !s.hidden); };
