@@ -1,0 +1,192 @@
+<!doctype html>
+<html lang="ko"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+<title>영상통화 시험</title>
+<!--
+  폰 ↔ 태블릿 영상통화 품질 시험(웹 페이지 하나, 서버 없음).
+  - 두 기기가 서로를 찾는 일만 무료 공개 서비스 PeerJS(0.peerjs.com)가 하고, 영상·소리는 두 기기 사이로 바로 오간다.
+  - 직접 연결이 안 되는 통신망이면 PeerJS의 무료 중계(TURN)를 쓴다. 화면의 '연결 방식'에 표시된다.
+  - 시험용 주소: ?host=localhost&port=9000 을 붙이면 그 PeerJS 서버를 쓴다(개발용).
+-->
+<style>
+:root{--bg:#0f1215;--panel:rgba(15,18,21,.72);--fg:#f3f1ee;--muted:#b9c1c8;--amber:#f0b45a;--red:#e5484d;--green:#3fb37f}
+*{box-sizing:border-box}[hidden]{display:none!important}
+html,body{margin:0;height:100%;background:var(--bg);color:var(--fg);font-family:system-ui,-apple-system,"Apple SD Gothic Neo","Noto Sans KR",sans-serif}
+#remote{position:fixed;inset:0;width:100%;height:100%;object-fit:contain;background:#000}
+#local{position:fixed;right:16px;top:calc(16px + env(safe-area-inset-top));width:28vw;max-width:220px;aspect-ratio:3/4;object-fit:cover;border-radius:16px;border:2px solid rgba(255,255,255,.25);background:#222;z-index:2;transform:scaleX(-1)}
+#local.back{transform:none}
+#bar{position:fixed;left:0;right:0;bottom:0;display:flex;gap:10px;justify-content:center;padding:16px 12px calc(20px + env(safe-area-inset-bottom));background:linear-gradient(transparent,rgba(0,0,0,.75));z-index:3;flex-wrap:wrap}
+button{font:inherit;font-size:17px;border:0;border-radius:999px;padding:14px 18px;background:#2a3036;color:var(--fg);cursor:pointer;min-height:52px}
+button.on{background:var(--amber);color:#1a1300}button.end{background:var(--red)}
+button.big{font-size:22px;padding:20px 40px;background:var(--amber);color:#1a1300;min-width:240px}
+#stats{position:fixed;left:16px;top:calc(16px + env(safe-area-inset-top));background:var(--panel);padding:12px 14px;border-radius:14px;font-size:14px;line-height:1.6;z-index:2;max-width:calc(100vw - 48px - 28vw);white-space:pre-line;font-variant-numeric:tabular-nums}
+#status{position:fixed;left:0;right:0;top:42%;text-align:center;font-size:21px;padding:0 24px;z-index:1;color:var(--muted);line-height:1.5}
+#start{position:fixed;inset:0;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:18px;padding:24px;z-index:5;background:var(--bg);text-align:center}
+#start h1{font-size:28px;margin:0}#start p{color:var(--muted);margin:0;font-size:17px;line-height:1.6;max-width:520px}
+#share{display:flex;flex-direction:column;gap:10px;align-items:center;width:100%;max-width:520px}
+#link{word-break:break-all;background:#1c2228;padding:12px 14px;border-radius:12px;font-size:15px;width:100%;user-select:all}
+.dot{display:inline-block;width:10px;height:10px;border-radius:50%;margin-right:6px;vertical-align:middle}
+</style></head><body>
+<video id="remote" autoplay playsinline></video>
+<video id="local" autoplay playsinline muted></video>
+<div id="status"></div>
+<div id="stats" hidden></div>
+<div id="bar" hidden>
+  <button id="mic" class="on">🎤 마이크</button>
+  <button id="cam" class="on">📷 카메라</button>
+  <button id="flip">🔄 앞/뒤</button>
+  <button id="hd">화질 720p</button>
+  <button id="st" class="on">📊 품질</button>
+  <button id="hang" class="end">끊기</button>
+</div>
+<div id="start">
+  <h1>영상통화 시험</h1>
+  <p id="intro"></p>
+  <div id="share" hidden>
+    <div id="link"></div>
+    <button id="sharebtn">🔗 링크 보내기</button>
+  </div>
+  <button id="go" class="big" hidden>통화 시작</button>
+  <button id="newroom" class="big" hidden>새 통화 만들기</button>
+</div>
+<script src="https://cdn.jsdelivr.net/npm/peerjs@1.5.4/dist/peerjs.min.js"></script>
+<script>
+const $ = s => document.querySelector(s);
+const P = new URLSearchParams(location.search);
+const code = P.get('c');
+const host = P.get('r') === 'a';                         // 통화를 만든 쪽(a)이 기다리고, 링크로 들어온 쪽(b)이 건다
+let peer, call, local, pc, facing = 'user', hd = false, timer, last = {}, retry;
+const say = t => $('#status').textContent = t || '';
+const ids = c => ({a: 'hcall-' + c + '-a', b: 'hcall-' + c + '-b'});
+const guestLink = c => location.origin + location.pathname + '?c=' + c + (P.get('host') ? '&host=' + P.get('host') + '&port=' + P.get('port') : '');
+
+if (!code) {
+  $('#intro').textContent = '한쪽 기기(예: 폰)에서 [새 통화 만들기]를 누르고, 나오는 링크를 다른 기기(예: 태블릿)로 보내 여세요.';
+  $('#newroom').hidden = false;
+} else if (host) {
+  $('#intro').textContent = '아래 링크를 다른 기기로 보내 여세요. 그리고 [통화 시작]을 누르세요.';
+  $('#share').hidden = false; $('#link').textContent = guestLink(code); $('#go').hidden = false;
+} else {
+  $('#intro').textContent = '[통화 시작]을 누르면 상대와 연결됩니다.';
+  $('#go').hidden = false;
+}
+$('#newroom').onclick = () => {
+  const c = Array.from(crypto.getRandomValues(new Uint8Array(6)), b => 'abcdefghjkmnpqrstuvwxyz23456789'[b % 31]).join('');
+  const q = new URLSearchParams(P); q.set('c', c); q.set('r', 'a'); location.search = q.toString();
+};
+$('#sharebtn').onclick = async () => {
+  const url = $('#link').textContent;
+  try { if (navigator.share) { await navigator.share({title: '영상통화', url}); return; } } catch (e) { return; }
+  try { await navigator.clipboard.writeText(url); $('#sharebtn').textContent = '✅ 복사했습니다'; } catch (e) { prompt('이 링크를 복사하세요', url); }
+};
+
+async function getMedia() {
+  const v = hd ? {width: {ideal: 1920}, height: {ideal: 1080}} : {width: {ideal: 1280}, height: {ideal: 720}};
+  return navigator.mediaDevices.getUserMedia({
+    audio: {echoCancellation: true, noiseSuppression: true, autoGainControl: true},
+    video: {...v, frameRate: {ideal: 30}, facingMode: facing}});
+}
+
+$('#go').onclick = async () => {
+  if (!window.Peer) { alert('연결 도구를 불러오지 못했습니다. 인터넷 연결을 확인하고 새로고침하세요.'); return; }
+  try { local = await getMedia(); }
+  catch (e) { alert('카메라·마이크를 켤 수 없습니다: ' + e.message + '\n브라우저의 카메라·마이크 권한을 허용해 주세요.'); return; }
+  $('#local').srcObject = local;
+  $('#start').hidden = true; $('#bar').hidden = false; $('#stats').hidden = false;
+  start();
+};
+
+function start() {
+  const opts = {debug: 1};
+  if (P.get('host')) Object.assign(opts, {host: P.get('host'), port: +P.get('port') || 9000, path: '/', secure: location.protocol === 'https:'});
+  peer = new Peer(host ? ids(code).a : ids(code).b, opts);
+  say('연결 준비 중…');
+  peer.on('open', () => { if (host) say('상대를 기다리는 중…\n다른 기기에서 링크를 열고 [통화 시작]을 누르세요.'); else dial(); });
+  peer.on('call', c => { c.answer(local); wire(c); });          // 만든 쪽: 걸려 오면 바로 받는다
+  peer.on('disconnected', () => { say('연결 서버와 잠시 끊겼습니다. 다시 잇는 중…'); try { peer.reconnect(); } catch (e) {} });
+  peer.on('error', e => {
+    if (e.type === 'peer-unavailable') { say('상대를 기다리는 중…\n만든 쪽 기기에서 [통화 시작]을 눌렀는지 확인하세요.'); clearTimeout(retry); retry = setTimeout(dial, 3000); }
+    else if (e.type === 'unavailable-id') say('이 통화가 다른 창에서 이미 열려 있습니다. 그 창을 닫고 새로고침하세요.');
+    else if (e.type === 'network' || e.type === 'server-error' || e.type === 'socket-error') say('연결 서버에 닿지 않습니다. 인터넷을 확인하고 새로고침하세요.');
+    else say('오류: ' + e.type);
+  });
+}
+function dial() {
+  if (!peer || peer.destroyed || peer.disconnected) return;
+  say('연결하는 중…');
+  wire(peer.call(ids(code).a, local));
+}
+function wire(c) {
+  if (call && call !== c) call.close();
+  call = c;
+  c.on('stream', s => { $('#remote').srcObject = s; say(''); });
+  c.on('close', () => { if (call === c) { $('#remote').srcObject = null; say('상대가 나갔습니다. 다시 들어오면 자동으로 연결됩니다.'); if (!host) { clearTimeout(retry); retry = setTimeout(dial, 3000); } } });
+  const watch = setInterval(() => {
+    pc = c.peerConnection; if (!pc) return; clearInterval(watch);
+    setBitrate();
+    pc.addEventListener('connectionstatechange', () => {
+      if (pc.connectionState === 'failed') say('연결 실패: 두 통신망 사이를 잇지 못했습니다.');
+      if (pc.connectionState === 'connected') say('');
+    });
+  }, 200);
+  clearInterval(timer); last = {}; timer = setInterval(stats, 1000);
+}
+
+function setBitrate() {
+  if (!pc) return;
+  pc.getSenders().filter(s => s.track && s.track.kind === 'video').forEach(s => {
+    const p = s.getParameters(); if (!p.encodings || !p.encodings.length) p.encodings = [{}];
+    p.encodings[0].maxBitrate = hd ? 4_000_000 : 2_000_000; s.setParameters(p).catch(() => {});
+  });
+}
+
+async function stats() {
+  if (!pc) return;
+  const r = await pc.getStats();
+  let inV, inA, outV, pair, codec = {};
+  r.forEach(s => {
+    if (s.type === 'inbound-rtp' && s.kind === 'video') inV = s;
+    if (s.type === 'inbound-rtp' && s.kind === 'audio') inA = s;
+    if (s.type === 'outbound-rtp' && s.kind === 'video') outV = s;
+    if (s.type === 'candidate-pair' && s.nominated && s.state === 'succeeded') pair = s;
+    if (s.type === 'codec') codec[s.id] = s.mimeType;
+  });
+  const lines = [];
+  const kbps = (s, key) => { const p = last[key]; last[key] = {t: s.timestamp, b: s.bytesReceived ?? s.bytesSent};
+    return p ? Math.round((last[key].b - p.b) * 8 / (s.timestamp - p.t)) : 0; };
+  let rtt = null;
+  if (inV) {
+    const lost = inV.packetsLost || 0, recv = inV.packetsReceived || 0;
+    lines.push(`받는 화면  ${inV.frameWidth || '-'}×${inV.frameHeight || '-'} · ${Math.round(inV.framesPerSecond || 0)}fps`);
+    lines.push(`받는 속도  ${(kbps(inV, 'inV') / 1000).toFixed(2)} Mbps`);
+    lines.push(`영상 손실  ${(lost / Math.max(1, lost + recv) * 100).toFixed(1)}% · 멈춤 ${inV.freezeCount ?? '-'}번`);
+    lines.push(`영상 코덱  ${(codec[inV.codecId] || '-').replace('video/', '')}`);
+  }
+  if (inA) { const l = inA.packetsLost || 0, rc = inA.packetsReceived || 0; lines.push(`소리 손실  ${(l / Math.max(1, l + rc) * 100).toFixed(1)}%`); }
+  if (outV) lines.push(`보내는 화면  ${outV.frameWidth || '-'}×${outV.frameHeight || '-'} · ${Math.round(outV.framesPerSecond || 0)}fps · ${(kbps(outV, 'outV') / 1000).toFixed(2)} Mbps`);
+  if (pair) {
+    rtt = pair.currentRoundTripTime;
+    const lc = r.get(pair.localCandidateId), rc = r.get(pair.remoteCandidateId);
+    const relay = (lc && lc.candidateType === 'relay') || (rc && rc.candidateType === 'relay');
+    lines.push(`왕복 지연  ${rtt != null ? Math.round(rtt * 1000) + 'ms' : '-'}`);
+    lines.push(`연결 방식  ${relay ? '중계(TURN)' : '직접(P2P)'}${lc && lc.networkType ? ' · ' + lc.networkType : ''}`);
+  }
+  const good = inV && (inV.framesPerSecond || 0) >= 20 && (rtt == null || rtt < 0.3);
+  $('#stats').innerHTML = `<span class="dot" style="background:${!inV ? '#888' : good ? 'var(--green)' : 'var(--amber)'}"></span>` + lines.join('\n');
+}
+
+$('#mic').onclick = e => { const t = local.getAudioTracks()[0]; t.enabled = !t.enabled; e.target.classList.toggle('on', t.enabled); };
+$('#cam').onclick = e => { const t = local.getVideoTracks()[0]; t.enabled = !t.enabled; e.target.classList.toggle('on', t.enabled); };
+$('#st').onclick = e => { const s = $('#stats'); s.hidden = !s.hidden; e.target.classList.toggle('on', !s.hidden); };
+async function swapVideo() {
+  local.getVideoTracks().forEach(t => t.stop());                 // 폰은 카메라를 하나만 열 수 있어 먼저 끈다
+  const nv = await getMedia(); const vt = nv.getVideoTracks()[0];
+  nv.getAudioTracks().forEach(t => t.stop());
+  local.getVideoTracks().forEach(t => local.removeTrack(t)); local.addTrack(vt);
+  $('#local').srcObject = local; $('#local').classList.toggle('back', facing !== 'user');
+  if (pc) { const s = pc.getSenders().find(s => s.track && s.track.kind === 'video') || pc.getSenders().find(s => !s.track); if (s) await s.replaceTrack(vt); setBitrate(); }
+}
+$('#flip').onclick = async () => { facing = facing === 'user' ? 'environment' : 'user'; try { await swapVideo(); } catch (e) { alert(e.message); } };
+$('#hd').onclick = async e => { hd = !hd; e.target.textContent = hd ? '화질 1080p' : '화질 720p'; e.target.classList.toggle('on', hd); try { await swapVideo(); } catch (err) { alert(err.message); } };
+$('#hang').onclick = () => { clearTimeout(retry); call && call.close(); peer && peer.destroy(); local && local.getTracks().forEach(t => t.stop()); location.reload(); };
+</script></body></html>
