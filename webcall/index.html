@@ -49,18 +49,23 @@ button.big{font-size:22px;padding:20px 40px;background:var(--amber);color:#1a130
   <button id="go" class="big" hidden>통화 시작</button>
   <button id="newroom" class="big" hidden>새 통화 만들기</button>
 </div>
-<script src="https://cdn.jsdelivr.net/npm/peerjs@1.5.4/dist/peerjs.min.js"></script>
 <script>
+// 신호 주고받기: ntfy.sh 공개 알림 서비스(계정 없음)로 통화 제안·응답만 주고받고, 영상은 두 기기가 직접(또는 중계 서버로) 주고받는다
 const $ = s => document.querySelector(s);
 const P = new URLSearchParams(location.search);
 const code = P.get('c');
 const host = P.get('r') === 'a';                         // 통화를 만든 쪽(a)이 기다리고, 링크로 들어온 쪽(b)이 건다
-let peer, call, local, pc, facing = 'user', hd = false, timer, last = {}, retry;
+const SIG = (P.get('sig') || 'https://ntfy.sh').replace(/\/$/, '');
+const TOPIC = 'gyeote-call-' + code;
+const ME = (host ? 'a-' : 'b-') + Math.random().toString(36).slice(2, 10);
+const ICE = [
+  {urls: ['stun:stun.l.google.com:19302', 'stun:stun.cloudflare.com:3478']},
+  {urls: ['turn:openrelay.metered.ca:80', 'turn:openrelay.metered.ca:443', 'turn:openrelay.metered.ca:443?transport=tcp'], username: 'openrelayproject', credential: 'openrelayproject'}];
+let es, local, pc, peerId = null, offerId = null, facing = 'user', hd = false, timer, last = {}, helloT, lastHello = 0;
 const D = {서버: '-', 상대: '-', 연결: '-'};
 const say = t => { $('#status').dataset.msg = t || ''; $('#status').textContent = (t ? t + '\n' : '') + `[서버 ${D.서버} · 상대 ${D.상대} · 연결 ${D.연결}]`; };
 const diag = (k, v) => { D[k] = v; say($('#status').dataset.msg); };
-const ids = c => ({a: 'hcall-' + c + '-a', b: 'hcall-' + c + '-b'});
-const guestLink = c => location.origin + location.pathname + '?c=' + c + (P.get('host') ? '&host=' + P.get('host') + '&port=' + P.get('port') : '');
+const guestLink = c => location.origin + location.pathname + '?c=' + c + (P.get('sig') ? '&sig=' + encodeURIComponent(P.get('sig')) : '');
 
 const UA = navigator.userAgent;
 const inApp = /KAKAOTALK|NAVER\(inapp|Instagram|FBAN|FBAV|Line\/|DaumApps|everytimeApp/i.test(UA);
@@ -77,7 +82,7 @@ if (!code) {
   $('#go').hidden = false;
 }
 $('#newroom').onclick = () => {
-  const c = Array.from(crypto.getRandomValues(new Uint8Array(6)), b => 'abcdefghjkmnpqrstuvwxyz23456789'[b % 31]).join('');
+  const c = Array.from(crypto.getRandomValues(new Uint8Array(10)), b => 'abcdefghjkmnpqrstuvwxyz23456789'[b % 31]).join('');
   const q = new URLSearchParams(P); q.set('c', c); q.set('r', 'a'); location.search = q.toString();
 };
 $('#sharebtn').onclick = async () => {
@@ -94,7 +99,6 @@ async function getMedia() {
 }
 
 $('#go').onclick = async () => {
-  if (!window.Peer) { alert('연결 도구를 불러오지 못했습니다. 인터넷 연결을 확인하고 새로고침하세요.'); return; }
   try { local = await getMedia(); }
   catch (e) { alert('카메라·마이크를 켤 수 없습니다: ' + e.message + '\n브라우저의 카메라·마이크 권한을 허용해 주세요.'); return; }
   $('#local').srcObject = local;
@@ -102,46 +106,104 @@ $('#go').onclick = async () => {
   start();
 };
 
+// --- 신호 보내기: 메시지가 길면 3000자씩 나눠 보낸다 ---
+async function send(msg) {
+  const body = JSON.stringify(Object.assign({from: ME}, msg));
+  const id = Math.random().toString(36).slice(2, 8), n = Math.ceil(body.length / 3000);
+  for (let i = 0; i < n; i++) {
+    const part = n === 1 ? body : JSON.stringify({part: id, i, n, d: body.slice(i * 3000, (i + 1) * 3000)});
+    for (let k = 0; k < 3; k++) {
+      try { const r = await fetch(SIG + '/' + TOPIC, {method: 'POST', body: part}); if (r.ok) break; } catch (e) {}
+      await new Promise(r => setTimeout(r, 800));
+    }
+  }
+}
+const parts = {};
+function onRaw(text) {
+  let m; try { m = JSON.parse(text); } catch (e) { return; }
+  if (m.part) {
+    const b = parts[m.part] = parts[m.part] || []; b[m.i] = m.d;
+    if (b.filter(x => x != null).length < m.n) return;
+    delete parts[m.part]; try { m = JSON.parse(b.join('')); } catch (e) { return; }
+  }
+  if (!m.from || m.from === ME || (m.to && m.to !== ME)) return;
+  onMsg(m).catch(e => console.error(e));
+}
+function listen() {
+  es && es.close();
+  es = new EventSource(SIG + '/' + TOPIC + '/sse?since=45s');
+  es.onopen = () => { diag('서버', '연결됨'); hello(true); };
+  es.onmessage = e => { try { const d = JSON.parse(e.data); if (d.event === 'message') onRaw(d.message); } catch (err) {} };
+  es.onerror = () => { diag('서버', es.readyState === 2 ? '실패' : '다시 잇는 중'); if (es.readyState === 2) setTimeout(listen, 3000); };
+}
+function hello(force) {
+  if (!force && Date.now() - lastHello < 4000) return;
+  lastHello = Date.now(); send({t: 'hello', role: host ? 'a' : 'b'});
+}
+function connected() { return pc && ['connected', 'completed'].includes(pc.iceConnectionState); }
+
 function start() {
-  const opts = {debug: 1, config: {iceServers: [
-    {urls: ['stun:stun.l.google.com:19302', 'stun:stun.cloudflare.com:3478']},
-    {urls: ['turn:openrelay.metered.ca:80', 'turn:openrelay.metered.ca:443', 'turn:openrelay.metered.ca:443?transport=tcp'], username: 'openrelayproject', credential: 'openrelayproject'},
-    {urls: ['turn:eu-0.turn.peerjs.com:3478', 'turn:us-0.turn.peerjs.com:3478'], username: 'peerjs', credential: 'peerjsp'}]}};
-  if (P.get('host')) Object.assign(opts, {host: P.get('host'), port: +P.get('port') || 9000, path: '/', secure: location.protocol === 'https:'});
-  peer = new Peer(host ? ids(code).a : ids(code).b, opts);
   say('연결 준비 중…');
-  peer.on('open', () => { diag('서버', '연결됨'); if (host) say('상대를 기다리는 중…\n다른 기기에서 링크를 열고 [통화 시작]을 누르세요.'); else dial(); });
-  peer.on('call', c => { c.answer(local); wire(c); });          // 만든 쪽: 걸려 오면 바로 받는다
-  peer.on('disconnected', () => { say('연결 서버와 잠시 끊겼습니다. 다시 잇는 중…'); try { peer.reconnect(); } catch (e) {} });
-  peer.on('error', e => {
-    if (e.type === 'peer-unavailable') { say('상대를 기다리는 중…\n만든 쪽 기기에서 [통화 시작]을 눌렀는지 확인하세요.'); clearTimeout(retry); retry = setTimeout(dial, 3000); }
-    else if (e.type === 'unavailable-id') say('이 통화가 다른 창에서 이미 열려 있습니다. 그 창을 닫고 새로고침하세요.');
-    else if (e.type === 'network' && diag('서버', '실패') || e.type === 'network' || e.type === 'server-error' || e.type === 'socket-error') say('연결 서버에 닿지 않습니다. 인터넷을 확인하고 새로고침하세요.');
-    else say('오류: ' + e.type);
+  listen();
+  // 연결될 때까지 6초마다 "여기 있어요" 신호를 보낸다
+  clearInterval(helloT); helloT = setInterval(() => { if (!connected()) hello(); }, 6000);
+  addEventListener('pagehide', () => { try { navigator.sendBeacon(SIG + '/' + TOPIC, JSON.stringify({from: ME, t: 'bye'})); } catch (e) {} });
+  say(host ? '상대를 기다리는 중…\n다른 기기에서 링크를 열고 [통화 시작]을 누르세요.' : '상대를 찾는 중…\n만든 쪽 기기에서 [통화 시작]을 눌렀는지 확인하세요.');
+}
+
+function newPc() {
+  pc && pc.close();
+  const p = new RTCPeerConnection({iceServers: ICE});
+  local.getTracks().forEach(t => p.addTrack(t, local));
+  p.ontrack = e => { $('#remote').srcObject = e.streams[0]; };
+  p.oniceconnectionstatechange = () => {
+    diag('연결', p.iceConnectionState);
+    if (p !== pc) return;
+    if (connected()) say('');
+    if (p.iceConnectionState === 'failed') { say('연결 실패: 두 통신망 사이를 잇지 못했습니다. 다시 시도합니다…'); offerId = null; hello(true); }
+  };
+  pc = p; diag('연결', p.iceConnectionState);
+  clearInterval(timer); last = {}; timer = setInterval(stats, 1000);
+  return p;
+}
+// 후보 주소를 다 모을 때까지(최대 4초) 기다렸다가 한 번에 보낸다
+function gathered(p) {
+  return new Promise(res => {
+    if (p.iceGatheringState === 'complete') return res();
+    const t = setTimeout(res, 4000);
+    p.addEventListener('icegatheringstatechange', () => { if (p.iceGatheringState === 'complete') { clearTimeout(t); res(); } });
   });
 }
-function dial() {
-  if (!peer || peer.destroyed || peer.disconnected) return;
-  say('연결하는 중…');
-  wire(peer.call(ids(code).a, local));
-}
-function wire(c) {
-  if (call && call !== c) call.close();
-  call = c;
-  diag('상대', '찾음');
-  c.on('stream', s => { $('#remote').srcObject = s; say(''); });
-  c.on('close', () => { if (call === c) { $('#remote').srcObject = null; say('상대가 나갔습니다. 다시 들어오면 자동으로 연결됩니다.'); if (!host) { clearTimeout(retry); retry = setTimeout(dial, 3000); } } });
-  const watch = setInterval(() => {
-    pc = c.peerConnection; if (!pc) return; clearInterval(watch);
-    setBitrate();
-    pc.addEventListener('connectionstatechange', () => {
-      if (pc.connectionState === 'failed') say('연결 실패: 두 통신망 사이를 잇지 못했습니다.');
-      if (pc.connectionState === 'connected') say('');
-    });
-    pc.addEventListener('iceconnectionstatechange', () => diag('연결', pc.iceConnectionState));
-    diag('연결', pc.iceConnectionState);
-  }, 200);
-  clearInterval(timer); last = {}; timer = setInterval(stats, 1000);
+
+async function onMsg(m) {
+  if (m.t === 'hello') {
+    if (m.role === (host ? 'a' : 'b')) return;              // 같은 편 신호는 무시
+    diag('상대', '찾음');
+    if (host) { if (!connected()) hello(); return; }       // 만든 쪽: 대답만 한다(링크 쪽이 건다)
+    if (connected() && peerId === m.from) return;
+    if (offerId && peerId === m.from && Date.now() - offerId.t < 12000) return;   // 방금 건 제안이 아직 진행 중
+    peerId = m.from; offerId = {id: Math.random().toString(36).slice(2, 8), t: Date.now()};
+    say('연결하는 중…');
+    const p = newPc();
+    await p.setLocalDescription(await p.createOffer());
+    await gathered(p); setBitrate();
+    send({t: 'offer', to: m.from, oid: offerId.id, sdp: p.localDescription.sdp});
+  } else if (m.t === 'offer' && host) {
+    peerId = m.from; diag('상대', '찾음'); say('연결하는 중…');
+    const p = newPc();
+    await p.setRemoteDescription({type: 'offer', sdp: m.sdp});
+    await p.setLocalDescription(await p.createAnswer());
+    await gathered(p); setBitrate();
+    send({t: 'answer', to: m.from, oid: m.oid, sdp: p.localDescription.sdp});
+  } else if (m.t === 'answer' && !host) {
+    if (!offerId || m.oid !== offerId.id || !pc || pc.signalingState !== 'have-local-offer') return;
+    await pc.setRemoteDescription({type: 'answer', sdp: m.sdp});
+  } else if (m.t === 'bye' && m.from === peerId) {
+    pc && pc.close(); pc = null; peerId = null; offerId = null;
+    $('#remote').srcObject = null; diag('상대', '나감'); diag('연결', '-');
+    say('상대가 나갔습니다. 다시 들어오면 자동으로 연결됩니다.');
+    hello(true);
+  }
 }
 
 function setBitrate() {
@@ -200,5 +262,5 @@ async function swapVideo() {
 }
 $('#flip').onclick = async () => { facing = facing === 'user' ? 'environment' : 'user'; try { await swapVideo(); } catch (e) { alert(e.message); } };
 $('#hd').onclick = async e => { hd = !hd; e.target.textContent = hd ? '화질 1080p' : '화질 720p'; e.target.classList.toggle('on', hd); try { await swapVideo(); } catch (err) { alert(err.message); } };
-$('#hang').onclick = () => { clearTimeout(retry); call && call.close(); peer && peer.destroy(); local && local.getTracks().forEach(t => t.stop()); location.reload(); };
+$('#hang').onclick = async () => { clearInterval(helloT); es && es.close(); await send({t: 'bye'}); pc && pc.close(); local && local.getTracks().forEach(t => t.stop()); location.reload(); };
 </script></body></html>
