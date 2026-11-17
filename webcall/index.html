@@ -56,10 +56,16 @@ const P = new URLSearchParams(location.search);
 const code = P.get('c');
 const host = P.get('r') === 'a';                         // 통화를 만든 쪽(a)이 기다리고, 링크로 들어온 쪽(b)이 건다
 let peer, call, local, pc, facing = 'user', hd = false, timer, last = {}, retry;
-const say = t => $('#status').textContent = t || '';
+const D = {서버: '-', 상대: '-', 연결: '-'};
+const say = t => { $('#status').dataset.msg = t || ''; $('#status').textContent = (t ? t + '\n' : '') + `[서버 ${D.서버} · 상대 ${D.상대} · 연결 ${D.연결}]`; };
+const diag = (k, v) => { D[k] = v; say($('#status').dataset.msg); };
 const ids = c => ({a: 'hcall-' + c + '-a', b: 'hcall-' + c + '-b'});
 const guestLink = c => location.origin + location.pathname + '?c=' + c + (P.get('host') ? '&host=' + P.get('host') + '&port=' + P.get('port') : '');
 
+const UA = navigator.userAgent;
+const inApp = /KAKAOTALK|NAVER\(inapp|Instagram|FBAN|FBAV|Line\/|DaumApps|everytimeApp/i.test(UA);
+if (/KAKAOTALK/i.test(UA)) location.href = 'kakaotalk://web/openExternal?url=' + encodeURIComponent(location.href);
+if (inApp) alert('지금 앱 안의 브라우저로 열려 있어 영상통화가 안 될 수 있습니다.\n오른쪽 위 메뉴에서 [다른 브라우저로 열기] 또는 [Chrome으로 열기]를 눌러 주세요.');
 if (!code) {
   $('#intro').textContent = '한쪽 기기(예: 폰)에서 [새 통화 만들기]를 누르고, 나오는 링크를 다른 기기(예: 태블릿)로 보내 여세요.';
   $('#newroom').hidden = false;
@@ -97,17 +103,20 @@ $('#go').onclick = async () => {
 };
 
 function start() {
-  const opts = {debug: 1};
+  const opts = {debug: 1, config: {iceServers: [
+    {urls: ['stun:stun.l.google.com:19302', 'stun:stun.cloudflare.com:3478']},
+    {urls: ['turn:openrelay.metered.ca:80', 'turn:openrelay.metered.ca:443', 'turn:openrelay.metered.ca:443?transport=tcp'], username: 'openrelayproject', credential: 'openrelayproject'},
+    {urls: ['turn:eu-0.turn.peerjs.com:3478', 'turn:us-0.turn.peerjs.com:3478'], username: 'peerjs', credential: 'peerjsp'}]}};
   if (P.get('host')) Object.assign(opts, {host: P.get('host'), port: +P.get('port') || 9000, path: '/', secure: location.protocol === 'https:'});
   peer = new Peer(host ? ids(code).a : ids(code).b, opts);
   say('연결 준비 중…');
-  peer.on('open', () => { if (host) say('상대를 기다리는 중…\n다른 기기에서 링크를 열고 [통화 시작]을 누르세요.'); else dial(); });
+  peer.on('open', () => { diag('서버', '연결됨'); if (host) say('상대를 기다리는 중…\n다른 기기에서 링크를 열고 [통화 시작]을 누르세요.'); else dial(); });
   peer.on('call', c => { c.answer(local); wire(c); });          // 만든 쪽: 걸려 오면 바로 받는다
   peer.on('disconnected', () => { say('연결 서버와 잠시 끊겼습니다. 다시 잇는 중…'); try { peer.reconnect(); } catch (e) {} });
   peer.on('error', e => {
     if (e.type === 'peer-unavailable') { say('상대를 기다리는 중…\n만든 쪽 기기에서 [통화 시작]을 눌렀는지 확인하세요.'); clearTimeout(retry); retry = setTimeout(dial, 3000); }
     else if (e.type === 'unavailable-id') say('이 통화가 다른 창에서 이미 열려 있습니다. 그 창을 닫고 새로고침하세요.');
-    else if (e.type === 'network' || e.type === 'server-error' || e.type === 'socket-error') say('연결 서버에 닿지 않습니다. 인터넷을 확인하고 새로고침하세요.');
+    else if (e.type === 'network' && diag('서버', '실패') || e.type === 'network' || e.type === 'server-error' || e.type === 'socket-error') say('연결 서버에 닿지 않습니다. 인터넷을 확인하고 새로고침하세요.');
     else say('오류: ' + e.type);
   });
 }
@@ -119,6 +128,7 @@ function dial() {
 function wire(c) {
   if (call && call !== c) call.close();
   call = c;
+  diag('상대', '찾음');
   c.on('stream', s => { $('#remote').srcObject = s; say(''); });
   c.on('close', () => { if (call === c) { $('#remote').srcObject = null; say('상대가 나갔습니다. 다시 들어오면 자동으로 연결됩니다.'); if (!host) { clearTimeout(retry); retry = setTimeout(dial, 3000); } } });
   const watch = setInterval(() => {
@@ -128,6 +138,8 @@ function wire(c) {
       if (pc.connectionState === 'failed') say('연결 실패: 두 통신망 사이를 잇지 못했습니다.');
       if (pc.connectionState === 'connected') say('');
     });
+    pc.addEventListener('iceconnectionstatechange', () => diag('연결', pc.iceConnectionState));
+    diag('연결', pc.iceConnectionState);
   }, 200);
   clearInterval(timer); last = {}; timer = setInterval(stats, 1000);
 }
