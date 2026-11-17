@@ -50,14 +50,15 @@ button.big{font-size:22px;padding:20px 40px;background:var(--amber);color:#1a130
   <button id="go" class="big" hidden>통화 시작</button>
   <button id="newroom" class="big" hidden>새 통화 만들기</button>
 </div>
+<script src="https://cdn.jsdelivr.net/npm/mqtt@5.10.1/dist/mqtt.min.js"></script>
 <script>
-// 신호 주고받기: ntfy.sh 공개 알림 서비스(계정 없음)로 통화 제안·응답만 주고받고, 영상은 두 기기가 직접(또는 중계 서버로) 주고받는다
+// 신호 주고받기: 공개 MQTT 서버 2곳(계정 없음, 메시지 수 제한 없음)에 동시에 붙어 통화 제안·응답만 주고받고, 영상은 두 기기가 직접(또는 중계 서버로) 주고받는다
 const $ = s => document.querySelector(s);
 const P = new URLSearchParams(location.search);
 const code = P.get('c');
 const host = P.get('r') === 'a';                         // 통화를 만든 쪽(a)이 기다리고, 링크로 들어온 쪽(b)이 건다
-const SIG = (P.get('sig') || 'https://ntfy.sh').replace(/\/$/, '');
-const TOPIC = 'gyeote-call-' + code;
+const BROKERS = P.get('mqtt') ? [P.get('mqtt')] : ['wss://broker.emqx.io:8084/mqtt', 'wss://broker.hivemq.com:8884/mqtt'];
+const TOPIC = 'gyeote/call/' + code;
 const ME = (host ? 'a-' : 'b-') + Math.random().toString(36).slice(2, 10);
 const ICE = [
   {urls: ['stun:stun.l.google.com:19302', 'stun:stun.cloudflare.com:3478']},
@@ -66,7 +67,7 @@ let es, local, pc, peerId = null, offerId = null, facing = 'user', hd = false, t
 const D = {서버: '-', 상대: '-', 연결: '-'};
 const say = t => { $('#status').dataset.msg = t || ''; $('#status').textContent = (t ? t + '\n' : '') + `[서버 ${D.서버} · 상대 ${D.상대} · 연결 ${D.연결}]`; };
 const diag = (k, v) => { D[k] = v; say($('#status').dataset.msg); };
-const guestLink = c => location.origin + location.pathname + '?c=' + c + (P.get('sig') ? '&sig=' + encodeURIComponent(P.get('sig')) : '');
+const guestLink = c => location.origin + location.pathname + '?c=' + c + (P.get('mqtt') ? '&mqtt=' + encodeURIComponent(P.get('mqtt')) : '');
 
 const UA = navigator.userAgent;
 const inApp = /KAKAOTALK|NAVER\(inapp|Instagram|FBAN|FBAV|Line\/|DaumApps|everytimeApp/i.test(UA);
@@ -107,35 +108,33 @@ $('#go').onclick = async () => {
   start();
 };
 
-// --- 신호 보내기: 메시지가 길면 3000자씩 나눠 보낸다 ---
-async function send(msg) {
-  const body = JSON.stringify(Object.assign({from: ME}, msg));
-  const id = Math.random().toString(36).slice(2, 8), n = Math.ceil(body.length / 3000);
-  for (let i = 0; i < n; i++) {
-    const part = n === 1 ? body : JSON.stringify({part: id, i, n, d: body.slice(i * 3000, (i + 1) * 3000)});
-    for (let k = 0; k < 3; k++) {
-      try { const r = await fetch(SIG + '/' + TOPIC, {method: 'POST', body: part}); if (r.ok) break; } catch (e) {}
-      await new Promise(r => setTimeout(r, 800));
-    }
-  }
+// --- 신호 주고받기: 붙어 있는 모든 서버에 보내고, 어느 서버로 오든 한 번만 처리한 ---
+let clients = [];
+const seen = new Set();
+function send(msg) {
+  const body = JSON.stringify(Object.assign({from: ME, mid: Math.random().toString(36).slice(2, 10)}, msg));
+  clients.forEach(c => { if (c.connected) c.publish(TOPIC, body); });
 }
-const parts = {};
 function onRaw(text) {
   let m; try { m = JSON.parse(text); } catch (e) { return; }
-  if (m.part) {
-    const b = parts[m.part] = parts[m.part] || []; b[m.i] = m.d;
-    if (b.filter(x => x != null).length < m.n) return;
-    delete parts[m.part]; try { m = JSON.parse(b.join('')); } catch (e) { return; }
-  }
   if (!m.from || m.from === ME || (m.to && m.to !== ME)) return;
+  if (m.mid) { if (seen.has(m.mid)) return; seen.add(m.mid); }
   onMsg(m).catch(e => console.error(e));
 }
+function srvState() {
+  const n = clients.filter(c => c.connected).length;
+  diag('서버', n ? `연결됨(${n})` : '다시 잇는 중');
+}
 function listen() {
-  es && es.close();
-  es = new EventSource(SIG + '/' + TOPIC + '/sse?since=45s');
-  es.onopen = () => { diag('서버', '연결됨'); hello(true); };
-  es.onmessage = e => { try { const d = JSON.parse(e.data); if (d.event === 'message') onRaw(d.message); } catch (err) {} };
-  es.onerror = () => { diag('서버', es.readyState === 2 ? '실패' : '다시 잇는 중'); if (es.readyState === 2) setTimeout(listen, 3000); };
+  if (!window.mqtt) { diag('서버', '실패'); say('연결 도구를 불러오지 못했습니다. 인터넷을 확인하고 새로고침하세요.'); return; }
+  clients = BROKERS.map(u => {
+    const c = mqtt.connect(u, {clientId: ME + '-' + Math.random().toString(36).slice(2, 6), clean: true, connectTimeout: 8000, reconnectPeriod: 3000, keepalive: 30});
+    c.on('connect', () => { c.subscribe(TOPIC); srvState(); hello(true); });
+    c.on('message', (t, buf) => onRaw(buf.toString()));
+    c.on('close', srvState); c.on('offline', srvState); c.on('error', srvState);
+    return c;
+  });
+  setTimeout(() => { if (!clients.some(c => c.connected)) diag('서버', '실패'); }, 10000);
 }
 function hello(force) {
   if (!force && Date.now() - lastHello < 4000) return;
@@ -148,7 +147,7 @@ function start() {
   listen();
   // 연결될 때까지 6초마다 "여기 있어요" 신호를 보낸다
   clearInterval(helloT); helloT = setInterval(() => { if (!connected()) hello(); }, 6000);
-  addEventListener('pagehide', () => { try { navigator.sendBeacon(SIG + '/' + TOPIC, JSON.stringify({from: ME, t: 'bye'})); } catch (e) {} });
+  addEventListener('pagehide', () => { try { send({t: 'bye'}); } catch (e) {} });
   say(host ? '상대를 기다리는 중…\n다른 기기에서 링크를 열고 [통화 시작]을 누르세요.' : '상대를 찾는 중…\n만든 쪽 기기에서 [통화 시작]을 눌렀는지 확인하세요.');
 }
 
@@ -265,7 +264,7 @@ async function stats() {
 
 
 // --- 원격 진단: 연결 상태 요약(주소는 빼고 종류만)을 진단 채널로 보낸다 ---
-const DIAG = 'gyeote-call-diag-q7m3';
+const DIAG = 'gyeote/diag/q7m3/';
 const ERR = [];
 addEventListener('error', e => ERR.push(String(e.message).slice(0, 120)));
 async function report() {
@@ -286,7 +285,8 @@ async function report() {
       Object.assign(o, {lc, rc, pair, rtp});
     } catch (e) { o.statsErr = e.message; }
   }
-  try { fetch(SIG + '/' + DIAG, {method: 'POST', body: JSON.stringify(o)}); } catch (e) {}
+  o.t = Date.now();
+  clients.forEach(c => { if (c.connected) c.publish(DIAG + o.role, JSON.stringify(o), {retain: true}); });
 }
 setInterval(() => { if (local) report(); }, 8000);
 
@@ -304,5 +304,5 @@ async function swapVideo() {
 }
 $('#flip').onclick = async () => { facing = facing === 'user' ? 'environment' : 'user'; try { await swapVideo(); } catch (e) { alert(e.message); } };
 $('#hd').onclick = async e => { hd = !hd; e.target.textContent = hd ? '화질 1080p' : '화질 720p'; e.target.classList.toggle('on', hd); try { await swapVideo(); } catch (err) { alert(err.message); } };
-$('#hang').onclick = async () => { clearInterval(helloT); es && es.close(); await send({t: 'bye'}); pc && pc.close(); local && local.getTracks().forEach(t => t.stop()); location.reload(); };
+$('#hang').onclick = async () => { clearInterval(helloT); send({t: 'bye'}); await new Promise(r => setTimeout(r, 300)); clients.forEach(c => c.end(true)); pc && pc.close(); local && local.getTracks().forEach(t => t.stop()); location.reload(); };
 </script></body></html>
