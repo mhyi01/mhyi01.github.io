@@ -74,7 +74,7 @@ const say = t => { $('#status').dataset.msg = t || ''; $('#status').textContent 
 const diag = (k, v) => { D[k] = v; say($('#status').dataset.msg); };
 const guestLink = c => location.origin + location.pathname + '?c=' + c + ['mqtt', 'turn', 'relay'].filter(k => P.get(k)).map(k => '&' + k + '=' + encodeURIComponent(P.get(k))).join('');
 
-const VER = 'v10';
+const VER = 'v11';
 const UA = navigator.userAgent;
 // 페이지가 열리기만 해도 한 번 알린다(카메라 실패·옛 버전 여부를 구분하려고)
 function beacon(stage, extra) {
@@ -202,8 +202,15 @@ function hello(force) {
 }
 function connected() { return pc && ['connected', 'completed'].includes(pc.iceConnectionState); }
 
+let wake = null;
+async function keepAwake() { try { if (navigator.wakeLock && document.visibilityState === 'visible') wake = await navigator.wakeLock.request('screen'); } catch (e) {} }
+document.addEventListener('visibilitychange', function () {
+  beacon(document.visibilityState === 'visible' ? 'visible' : 'hidden', {brokers: clients.map(function (c) { return c.connected ? 1 : 0; }).join('')});
+  if (document.visibilityState === 'visible' && started) { keepAwake(); hello(true); }
+});
 function start() {
-  beacon('start');
+  beacon('start'); keepAwake();
+  setTimeout(function () { beacon('after10s', {brokers: clients.map(function (c) { return c.connected ? 1 : 0; }).join(''), D: Object.assign({}, D), ev: EV.slice(-12)}); }, 10000);
   say('연결 준비 중…');
   listen();
   // 연결될 때까지 6초마다 "여기 있어요" 신호를 보낸다
@@ -357,7 +364,7 @@ async function report() {
   }
   clients.forEach(c => { if (c.connected) c.publish(DIAG + o.role, JSON.stringify(o), true); });
 }
-setInterval(() => { if (local) report(); }, 8000);
+setInterval(() => { if (local) report().catch(function (e) { beacon('report-err', {err: String(e && e.message).slice(0, 120)}); }); }, 8000);
 
 $('#unmute').onclick = () => playRemote();
 $('#mic').onclick = e => { const t = local.getAudioTracks()[0]; t.enabled = !t.enabled; e.target.classList.toggle('on', t.enabled); };
