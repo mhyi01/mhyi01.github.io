@@ -30,6 +30,7 @@ button.big{font-size:22px;padding:20px 40px;background:var(--amber);color:#1a130
 <video id="remote" autoplay playsinline></video>
 <video id="local" autoplay playsinline muted></video>
 <div id="status"></div>
+<div id="ver" style="position:fixed;right:8px;bottom:4px;font-size:11px;opacity:.5;z-index:2"></div>
 <button id="unmute" class="big" hidden style="position:fixed;left:50%;top:40%;transform:translate(-50%,-50%);z-index:5">▶ 상대 화면·소리 켜기</button>
 <div id="stats" hidden></div>
 <div id="bar" hidden>
@@ -73,7 +74,14 @@ const say = t => { $('#status').dataset.msg = t || ''; $('#status').textContent 
 const diag = (k, v) => { D[k] = v; say($('#status').dataset.msg); };
 const guestLink = c => location.origin + location.pathname + '?c=' + c + ['mqtt', 'turn', 'relay'].filter(k => P.get(k)).map(k => '&' + k + '=' + encodeURIComponent(P.get(k))).join('');
 
+const VER = 'v8';
 const UA = navigator.userAgent;
+// 페이지가 열리기만 해도 한 번 알린다(카메라 실패·옛 버전 여부를 구분하려고)
+function beacon(stage, extra) {
+  try { fetch('https://ntfy.sh/gyeote-call-diag-q7m3', {method: 'POST', body: JSON.stringify(Object.assign({stage: stage, ver: VER, role: host ? 'a' : 'b', c: (code || '').slice(0, 4), ua: UA.slice(0, 160), t: Date.now()}, extra || {}))}); } catch (e) {}
+}
+beacon('load');
+document.getElementById('ver').textContent = VER;
 const inApp = /KAKAOTALK|NAVER\(inapp|Instagram|FBAN|FBAV|Line\/|DaumApps|everytimeApp/i.test(UA);
 if (/KAKAOTALK/i.test(UA)) location.href = 'kakaotalk://web/openExternal?url=' + encodeURIComponent(location.href);
 if (inApp) alert('지금 앱 안의 브라우저로 열려 있어 영상통화가 안 될 수 있습니다.\n오른쪽 위 메뉴에서 [다른 브라우저로 열기] 또는 [Chrome으로 열기]를 눌러 주세요.');
@@ -109,7 +117,7 @@ async function getMedia() {
 
 $('#go').onclick = async () => {
   try { local = await getMedia(); }
-  catch (e) { alert('카메라·마이크를 켤 수 없습니다: ' + e.message + '\n브라우저의 카메라·마이크 권한을 허용해 주세요.'); return; }
+  catch (e) { beacon('media-fail', {err: String(e.name) + ': ' + String(e.message).slice(0, 100)}); alert('카메라·마이크를 켤 수 없습니다: ' + e.message + '\n브라우저의 카메라·마이크 권한을 허용해 주세요.'); return; }
   $('#local').srcObject = local;
   $('#start').hidden = true; $('#bar').hidden = false; $('#stats').hidden = false;
   start();
@@ -185,6 +193,7 @@ function hello(force) {
 function connected() { return pc && ['connected', 'completed'].includes(pc.iceConnectionState); }
 
 function start() {
+  beacon('start');
   say('연결 준비 중…');
   listen();
   // 연결될 때까지 6초마다 "여기 있어요" 신호를 보낸다
