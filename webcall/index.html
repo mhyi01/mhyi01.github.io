@@ -30,7 +30,7 @@ button.big{font-size:22px;padding:20px 40px;background:var(--amber);color:#1a130
 <video id="remote" autoplay playsinline></video>
 <video id="local" autoplay playsinline muted></video>
 <div id="status"></div>
-<div id="ver" style="position:fixed;right:8px;bottom:4px;font-size:11px;opacity:.5;z-index:2"></div>
+<div id="ver" style="position:fixed;right:10px;top:8px;font-size:14px;opacity:.7;z-index:50;color:#fff"></div>
 <button id="unmute" class="big" hidden style="position:fixed;left:50%;top:40%;transform:translate(-50%,-50%);z-index:5">▶ 상대 화면·소리 켜기</button>
 <div id="stats" hidden></div>
 <div id="bar" hidden>
@@ -70,11 +70,11 @@ const ICE = [{urls: ['stun:stun.l.google.com:19302', 'stun:stun.cloudflare.com:3
 const RELAY_ONLY = P.get('relay') === '1';            // 시험용: 중계 서버로만 연결
 let es, local, pc, peerId = null, offerId = null, facing = 'user', hd = false, timer, last = {}, helloT, lastHello = 0;
 const D = {서버: '-', 상대: '-', 연결: '-'};
-const say = t => { $('#status').dataset.msg = t || ''; $('#status').textContent = (t ? t + '\n' : '') + `[서버 ${D.서버} · 상대 ${D.상대} · 연결 ${D.연결}]`; };
+const say = t => { $('#status').dataset.msg = t || ''; $('#status').textContent = (t ? t + '\n' : '') + `[서버 ${D.서버} · 상대 ${D.상대} · 연결 ${D.연결}] ${VER}`; };
 const diag = (k, v) => { D[k] = v; say($('#status').dataset.msg); };
 const guestLink = c => location.origin + location.pathname + '?c=' + c + ['mqtt', 'turn', 'relay'].filter(k => P.get(k)).map(k => '&' + k + '=' + encodeURIComponent(P.get(k))).join('');
 
-const VER = 'v8';
+const VER = 'v9';
 const UA = navigator.userAgent;
 // 페이지가 열리기만 해도 한 번 알린다(카메라 실패·옛 버전 여부를 구분하려고)
 function beacon(stage, extra) {
@@ -315,7 +315,7 @@ async function stats() {
 
 
 // --- 원격 진단: 연결 상태 요약(주소는 빼고 종류만)을 진단 채널로 보낸다 ---
-const DIAG = 'gyeote/diag/q7m3/';
+const DIAG = 'gyeote/diag/q7m3/' + (code || 'x').slice(0, 4) + '/';
 const ERR = [];
 addEventListener('error', e => ERR.push(String(e.message).slice(0, 120)));
 async function report() {
