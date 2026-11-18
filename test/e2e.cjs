@@ -32,8 +32,8 @@ async function runFixed(b) {
   const root = BASE.replace(/webcall\/$/, '');
   try {
     const code = 'ci' + Math.random().toString(36).slice(2, 10);   // 실제 사용 통화방과 섞이지 않게 시험용 방을 쓴다
-    await T.goto(root + 't/?code=' + code); await T.waitForURL(/f=1/); await T.click('#go');
-    await Ph.goto(root + 'p/?code=' + code); await Ph.waitForURL(/f=1/); await Ph.click('#go');
+    await T.goto(root + 't/?code=' + code); await T.waitForURL(/f=1/); await T.waitForTimeout(1500); if (await T.isVisible('#go')) await T.click('#go');
+    await Ph.goto(root + 'p/?code=' + code); await Ph.waitForURL(/f=1/); await Ph.waitForTimeout(1500); if (await Ph.isVisible('#go')) await Ph.click('#go');
     let a, bb;
     for (let i = 0; i < 45; i++) { await T.waitForTimeout(1000); [a, bb] = [await probe(T), await probe(Ph)]; if (a.frames > 15 && bb.frames > 15 && a.playing && bb.playing) break; }
     return {name: '고정 통화방(/t, /p)', ok: a.frames > 15 && bb.frames > 15 && a.audio > 2000 && bb.audio > 2000 && a.playing && bb.playing, sec: Math.round((Date.now() - t0) / 1000), A: a, B: bb, must: true};
