@@ -25,6 +25,20 @@ async function probe(p) {
     return {ice: pc.iceConnectionState, frames: v, audio: a, path, playing: !el.paused && el.videoWidth > 0, srv: document.querySelector('#status').textContent.match(/\[(.*)\]/)?.[1]};
   });
 }
+// 고정 통화방: 태블릿은 /t, 폰은 /p 만 연다
+async function runFixed(b) {
+  const mk = async () => (await b.newContext({permissions: ['camera', 'microphone']})).newPage();
+  const T = await mk(), Ph = await mk(); const t0 = Date.now();
+  const root = BASE.replace(/webcall\/$/, '');
+  try {
+    await T.goto(root + 't/'); await T.waitForURL(/f=1/); await T.click('#go');
+    await Ph.goto(root + 'p/'); await Ph.waitForURL(/f=1/); await Ph.click('#go');
+    let a, bb;
+    for (let i = 0; i < 45; i++) { await T.waitForTimeout(1000); [a, bb] = [await probe(T), await probe(Ph)]; if (a.frames > 15 && bb.frames > 15 && a.playing && bb.playing) break; }
+    return {name: '고정 통화방(/t, /p)', ok: a.frames > 15 && bb.frames > 15 && a.audio > 2000 && bb.audio > 2000 && a.playing && bb.playing, sec: Math.round((Date.now() - t0) / 1000), A: a, B: bb, must: true};
+  } catch (e) { return {name: '고정 통화방(/t, /p)', ok: false, err: e.message.slice(0, 200), must: true}; }
+  finally { await T.context().close(); await Ph.context().close(); }
+}
 async function run(b, c) {
   const mk = async () => (await b.newContext({permissions: ['camera', 'microphone']})).newPage();
   const A = await mk(), B = await mk();
@@ -48,9 +62,11 @@ async function run(b, c) {
 (async () => {
   const b = await chromium.launch({args: ['--use-fake-ui-for-media-stream', '--use-fake-device-for-media-stream', '--autoplay-policy=document-user-activation-required']});
   const res = [];
-  for (const c of CASES) { const r = await run(b, c); res.push(r); console.log(JSON.stringify(r)); }
+  for (const c of CASES) { const r = await run(b, c); if (!c.q) r.must = true; res.push(r); console.log(JSON.stringify(r)); }
+  { const r = await runFixed(b); res.push(r); console.log(JSON.stringify(r)); }
   await b.close();
   console.log('\n===== 결과 =====');
   for (const r of res) console.log((r.ok ? '통과' : '실패') + ' | ' + r.name + ' | ' + (r.sec || '-') + '초 | ' + (r.A ? `A ${r.A.ice} ${r.A.path} 영상${r.A.frames} 소리${r.A.audio}B / B ${r.B.ice} ${r.B.path} 영상${r.B.frames} 소리${r.B.audio}B | ${r.A.srv}` : r.err));
-  if (!res[0].ok || !res.slice(1).some(r => r.ok)) process.exit(1);
+  // 꼭 통과해야 하는 것: 직접 연결, 고정 통화방. 중계 서버 항목은 계정 있는 중계 서버를 넣기 전까지 참고용
+  if (res.some(r => r.must && !r.ok)) process.exit(1);
 })();
