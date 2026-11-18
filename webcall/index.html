@@ -81,6 +81,9 @@ if (inApp) alert('지금 앱 안의 브라우저로 열려 있어 영상통화�
 if (!code) {
   $('#intro').textContent = '한쪽 기기(예: 폰)에서 [새 통화 만들기]를 누르고, 나오는 링크를 다른 기기(예: 태블릿)로 보내 여세요.';
   $('#newroom').hidden = false;
+} else if (P.get('f')) {                                   // 고정 통화방(/t, /p): 링크 보낼 필요 없이 바로 시작
+  $('#intro').textContent = '[통화 시작]을 누르세요. 상대도 누르면 연결됩니다.';
+  $('#go').hidden = false;
 } else if (host) {
   $('#intro').textContent = '아래 링크를 다른 기기로 보내 여세요. 그리고 [통화 시작]을 누르세요.';
   $('#share').hidden = false; $('#link').textContent = guestLink(code); $('#go').hidden = false;
