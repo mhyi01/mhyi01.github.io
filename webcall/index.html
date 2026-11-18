@@ -74,7 +74,7 @@ const say = t => { $('#status').dataset.msg = t || ''; $('#status').textContent 
 const diag = (k, v) => { D[k] = v; say($('#status').dataset.msg); };
 const guestLink = c => location.origin + location.pathname + '?c=' + c + ['mqtt', 'turn', 'relay'].filter(k => P.get(k)).map(k => '&' + k + '=' + encodeURIComponent(P.get(k))).join('');
 
-const VER = 'v9';
+const VER = 'v10';
 const UA = navigator.userAgent;
 // 페이지가 열리기만 해도 한 번 알린다(카메라 실패·옛 버전 여부를 구분하려고)
 function beacon(stage, extra) {
@@ -115,13 +115,22 @@ async function getMedia() {
     video: Object.assign({}, v, {frameRate: {ideal: 30}, facingMode: facing})});
 }
 
+let started = false;
 $('#go').onclick = async () => {
+  if (started) return;
   try { local = await getMedia(); }
   catch (e) { beacon('media-fail', {err: String(e.name) + ': ' + String(e.message).slice(0, 100)}); alert('카메라·마이크를 켤 수 없습니다: ' + e.message + '\n브라우저의 카메라·마이크 권한을 허용해 주세요.'); return; }
   $('#local').srcObject = local;
+  started = true;
   $('#start').hidden = true; $('#bar').hidden = false; $('#stats').hidden = false;
   start();
 };
+// 고정 통화방(/t, /p): 카메라 권한이 이미 허락돼 있으면 열리자마자 연결을 시작한다
+if (P.get('f') && navigator.permissions && navigator.permissions.query) {
+  Promise.all([navigator.permissions.query({name: 'camera'}), navigator.permissions.query({name: 'microphone'})])
+    .then(function (r) { if (r[0].state === 'granted' && r[1].state === 'granted') $('#go').onclick(); })
+    .catch(function () {});
+}
 
 
 // --- 아주 작은 MQTT 3.1.1 클라이언트(웹소켓). 외부 라이브러리 없이 오래된 브라우저에서도 돌게 직접 구현 ---
@@ -165,6 +174,7 @@ function MiniMqtt(url, clientId, onMsg, onState) {
 let clients = [];
 const seen = new Set();
 function send(msg) {
+  ev('보냄 ' + msg.t);
   const body = JSON.stringify(Object.assign({from: ME, mid: Math.random().toString(36).slice(2, 10)}, msg));
   clients.forEach(c => { if (c.connected) c.publish(TOPIC, body); });
 }
@@ -220,6 +230,7 @@ function newPc() {
   };
   p.oniceconnectionstatechange = () => {
     if (p !== pc) return;
+    ev('연결상태 ' + p.iceConnectionState);
     diag('연결', p.iceConnectionState);
     if (connected()) playRemote();
     if (connected()) say('');
@@ -238,7 +249,10 @@ function gathered(p) {
   });
 }
 
+const EV = [];
+function ev(x) { EV.push(Math.round(performance.now() / 100) / 10 + 's ' + x); if (EV.length > 30) EV.shift(); }
 async function onMsg(m) {
+  ev('받음 ' + m.t + ' ' + String(m.from).slice(0, 6));
   if (m.t === 'hello') {
     if (m.role === (host ? 'a' : 'b')) return;              // 같은 편 신호는 무시
     diag('상대', '찾음');
@@ -336,7 +350,7 @@ async function report() {
       Object.assign(o, {lc, rc, pair, rtp});
     } catch (e) { o.statsErr = e.message; }
   }
-  o.t = Date.now();
+  o.t = Date.now(); o.ev = EV.slice(-20); o.ver = VER;
   o.brokers = clients.map(function (c) { return c.connected ? 1 : 0; }).join('');
   if (!clients.some(function (c) { return c.connected; }) && (report.n = (report.n || 0) + 1) <= 5) {   // 신호 서버에 못 붙은 기기는 https로 몇 번만 알린다
     try { fetch('https://ntfy.sh/gyeote-call-diag-q7m3', {method: 'POST', body: JSON.stringify(o)}); } catch (e) {}
