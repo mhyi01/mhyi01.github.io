@@ -4,10 +4,8 @@ const {chromium} = require('playwright');
 const BASE = process.env.BASE || 'http://127.0.0.1:8080/webcall/';
 const CASES = [
   {name: '기본(직접 연결 허용)', q: ''},
-  {name: '중계만: openrelay', q: '&relay=1&turn=openrelay'},
-  {name: '중계만: freestun', q: '&relay=1&turn=freestun'},
-  {name: '중계만: peerjs', q: '&relay=1&turn=peerjs'},
-  {name: '중계만: 기본 목록 전체', q: '&relay=1'},
+  {name: '중계만: ExpressTURN(기본값)', q: '&relay=1', must: true},
+  {name: '중계만: ExpressTURN TCP', q: '&relay=1&tcp=1', must: true},
 ];
 async function probe(p) {
   return p.evaluate(async () => {
@@ -63,7 +61,7 @@ async function run(b, c) {
 (async () => {
   const b = await chromium.launch({args: ['--use-fake-ui-for-media-stream', '--use-fake-device-for-media-stream', '--autoplay-policy=document-user-activation-required']});
   const res = [];
-  for (const c of CASES) { const r = await run(b, c); if (!c.q) r.must = true; res.push(r); console.log(JSON.stringify(r)); }
+  for (const c of CASES) { const r = await run(b, c); if (!c.q || c.must) r.must = true; res.push(r); console.log(JSON.stringify(r)); }
   { const r = await runFixed(b); res.push(r); console.log(JSON.stringify(r)); }
   await b.close();
   console.log('\n===== 결과 =====');

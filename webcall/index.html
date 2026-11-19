@@ -62,19 +62,20 @@ const TOPIC = 'gyeote/call/' + code;
 const ME = (host ? 'a-' : 'b-') + Math.random().toString(36).slice(2, 10);
 // 중계 서버 후보. 자동 시험(e2e)으로 실제로 중계가 되는 것만 기본값에 남긴다
 const TURNS = {
+  express: {urls: ['turn:free.expressturn.com:3478', 'turn:free.expressturn.com:3478?transport=tcp'], username: '000000002110530138', credential: 'hoWYn5Vi2mQcyQYnevGpnykwCwU='},
   openrelay: {urls: ['turn:openrelay.metered.ca:80', 'turn:openrelay.metered.ca:443', 'turn:openrelay.metered.ca:443?transport=tcp'], username: 'openrelayproject', credential: 'openrelayproject'},
   freestun: {urls: ['turn:freestun.net:3478', 'turns:freestun.net:5350'], username: 'free', credential: 'free'},
   peerjs: {urls: ['turn:eu-0.turn.peerjs.com:3478', 'turn:us-0.turn.peerjs.com:3478'], username: 'peerjs', credential: 'peerjsp'}};
-const TURN_USE = (P.get('turn') || 'openrelay,freestun,peerjs').split(',').filter(k => TURNS[k]);
-const ICE = [{urls: ['stun:stun.l.google.com:19302', 'stun:stun.cloudflare.com:3478']}].concat(TURN_USE.map(k => TURNS[k]));
+const TURN_USE = (P.get('turn') || 'express').split(',').filter(k => TURNS[k]);
+const ICE = [{urls: ['stun:stun.l.google.com:19302', 'stun:stun.cloudflare.com:3478']}].concat(TURN_USE.map(k => P.get('tcp') ? Object.assign({}, TURNS[k], {urls: TURNS[k].urls.filter(u => u.indexOf('transport=tcp') > 0)}) : TURNS[k]));
 const RELAY_ONLY = P.get('relay') === '1';            // 시험용: 중계 서버로만 연결
 let local, pc, peerId = null, offerId = null, facing = 'user', hd = false, timer, last = {}, helloT, lastHello = 0;
 const D = {서버: '-', 상대: '-', 연결: '-'};
 const say = t => { $('#status').dataset.msg = t || ''; $('#status').textContent = (t ? t + '\n' : '') + `[서버 ${D.서버} · 상대 ${D.상대} · 연결 ${D.연결}] ${VER}`; };
 const diag = (k, v) => { D[k] = v; say($('#status').dataset.msg); };
-const guestLink = c => location.origin + location.pathname + '?c=' + c + ['mqtt', 'ntfy', 'turn', 'relay'].filter(k => P.get(k)).map(k => '&' + k + '=' + encodeURIComponent(P.get(k))).join('');
+const guestLink = c => location.origin + location.pathname + '?c=' + c + ['mqtt', 'ntfy', 'turn', 'relay', 'tcp'].filter(k => P.get(k)).map(k => '&' + k + '=' + encodeURIComponent(P.get(k))).join('');
 
-const VER = 'v13';
+const VER = 'v14';
 const UA = navigator.userAgent;
 // 페이지가 열리기만 해도 한 번 알린다(카메라 실패·옛 버전 여부를 구분하려고)
 function beacon(stage, extra) {
