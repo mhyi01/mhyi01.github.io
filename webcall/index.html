@@ -74,7 +74,7 @@ const say = t => { $('#status').dataset.msg = t || ''; $('#status').textContent 
 const diag = (k, v) => { D[k] = v; say($('#status').dataset.msg); };
 const guestLink = c => location.origin + location.pathname + '?c=' + c + ['mqtt', 'ntfy', 'turn', 'relay'].filter(k => P.get(k)).map(k => '&' + k + '=' + encodeURIComponent(P.get(k))).join('');
 
-const VER = 'v12';
+const VER = 'v13';
 const UA = navigator.userAgent;
 // 페이지가 열리기만 해도 한 번 알린다(카메라 실패·옛 버전 여부를 구분하려고)
 function beacon(stage, extra) {
@@ -372,7 +372,7 @@ async function stats() {
 const DIAG = 'gyeote/diag/q7m3/' + (code || 'x').slice(0, 4) + '/';
 const ERR = [];
 addEventListener('error', e => ERR.push(String(e.message).slice(0, 120)));
-async function report() {
+async function buildState() {
   const v = $('#remote'), o = {role: host ? 'a' : 'b', me: ME.slice(0, 6), c: (code || '').slice(0, 4), ua: UA.slice(0, 160), D: Object.assign({}, D),
     msg: ($('#status').dataset.msg || '').slice(0, 60), video: {paused: v.paused, rs: v.readyState, w: v.videoWidth, h: v.videoHeight, tracks: v.srcObject ? v.srcObject.getTracks().map(t => t.kind + ':' + t.readyState + (t.muted ? ':muted' : '')).join(',') : 'none'},
     local: local ? local.getTracks().map(t => t.kind + ':' + t.readyState + ':' + (t.enabled ? 'on' : 'off')).join(',') : 'none', err: ERR.slice(-3)};
@@ -392,12 +392,66 @@ async function report() {
   }
   o.t = Date.now(); o.ev = EV.slice(-20); o.ver = VER;
   o.brokers = clients.map(function (c) { return c.connected ? 1 : 0; }).join('');
+  o.ntfy = es ? es.readyState : -1; o.vis = document.visibilityState; o.started = started;
+  return o;
+}
+async function report() {
+  const o = await buildState();
   if (!clients.some(function (c) { return c.connected; }) && (report.n = (report.n || 0) + 1) <= 5) {   // 신호 서버에 못 붙은 기기는 https로 몇 번만 알린다
     try { fetch('https://ntfy.sh/gyeote-call-diag-q7m3', {method: 'POST', body: JSON.stringify(o)}); } catch (e) {}
   }
   clients.forEach(c => { if (c.connected) c.publish(DIAG + o.role, JSON.stringify(o), true); });
 }
 setInterval(() => { if (local) report().catch(function (e) { beacon('report-err', {err: String(e && e.message).slice(0, 120)}); }); }, 8000);
+
+
+// --- 원격 시험 조종(비밀 열쇠 k가 있는 기기만): 클라우드의 Claude가 명령을 보내고 결과를 받는다 ---
+// 화면 사진은 보내지 않는다. 영상이 실제로 나오는지는 작은 화면의 밝기·움직임 숫자로만 확인한다
+let KEY = P.get('k');
+try { if (KEY) localStorage.setItem('gyeote_k', KEY); else KEY = localStorage.getItem('gyeote_k'); } catch (e) {}
+const lastLuma = {};
+function frameStats(el, name) {
+  const v = $(el); if (!v || !v.videoWidth) return {w: 0};
+  const cv = document.createElement('canvas'); cv.width = 32; cv.height = 18;
+  const g = cv.getContext('2d'); g.drawImage(v, 0, 0, 32, 18);
+  const d = g.getImageData(0, 0, 32, 18).data; let sum = 0, sq = 0, diff = 0; const now = [];
+  for (let i = 0; i < d.length; i += 4) { const y = 0.299 * d[i] + 0.587 * d[i + 1] + 0.114 * d[i + 2]; now.push(y); sum += y; sq += y * y; }
+  const n = now.length, mean = sum / n, prev = lastLuma[name];
+  if (prev) for (let i = 0; i < n; i++) diff += Math.abs(now[i] - prev[i]);
+  lastLuma[name] = now;
+  return {w: v.videoWidth, h: v.videoHeight, paused: v.paused, mean: Math.round(mean), std: Math.round(Math.sqrt(Math.max(0, sq / n - mean * mean))), motion: prev ? Math.round(diff / n * 10) / 10 : null};
+}
+async function audioLevel() {
+  if (!pc) return null; let lv = null;
+  try { const r = await pc.getStats(); r.forEach(x => { if (x.type === 'inbound-rtp' && x.kind === 'audio') lv = {level: x.audioLevel, energy: x.totalAudioEnergy, bytes: x.bytesReceived}; }); } catch (e) {}
+  return lv;
+}
+async function runCmd(c) {
+  const role = host ? 'a' : 'b';
+  if (c.to && c.to !== role && c.to !== 'all') return;
+  let data = null, ok = true;
+  try {
+    if (c.cmd === 'state') data = await buildState();
+    else if (c.cmd === 'frame') data = {remote: frameStats('#remote', 'r'), local: frameStats('#local', 'l'), audio: await audioLevel()};
+    else if (c.cmd === 'reload') { setTimeout(function () { location.reload(); }, 300); data = 'reloading'; }
+    else if (c.cmd === 'start') { $('#go').onclick(); data = 'starting'; }
+    else if (c.cmd === 'hang') { $('#hang').onclick(); data = 'hanging'; }
+    else if (c.cmd === 'hd') { $('#hd').onclick({target: $('#hd')}); data = 'hd toggled'; }
+    else if (c.cmd === 'flip') { $('#flip').onclick(); data = 'flipped'; }
+    else if (c.cmd === 'unmute') { playRemote(); data = 'play'; }
+    else { ok = false; data = 'unknown'; }
+  } catch (e) { ok = false; data = String(e && e.message); }
+  const body = JSON.stringify({id: c.id, role: role, cmd: c.cmd, ok: ok, ver: VER, t: Date.now(), data: data}).slice(0, 3900);
+  fetch(NTFY + '/gyeote-res-' + KEY, {method: 'POST', body: body}).catch(function () {});
+}
+if (KEY) {
+  (function ctlListen() {
+    const ce = new EventSource(NTFY + '/gyeote-ctl-' + KEY + '/sse');
+    ce.onmessage = function (e) { let d; try { d = JSON.parse(e.data); } catch (err) { return; } if (d.event !== 'message') return; let c; try { c = JSON.parse(d.message); } catch (err) { return; } runCmd(c); };
+    ce.onerror = function () { if (ce.readyState === 2) setTimeout(ctlListen, 5000); };
+  })();
+  fetch(NTFY + '/gyeote-res-' + KEY, {method: 'POST', body: JSON.stringify({role: host ? 'a' : 'b', cmd: 'hello', ver: VER, t: Date.now(), ua: UA.slice(0, 120)})}).catch(function () {});
+}
 
 $('#unmute').onclick = () => playRemote();
 $('#mic').onclick = e => { const t = local.getAudioTracks()[0]; t.enabled = !t.enabled; e.target.classList.toggle('on', t.enabled); };

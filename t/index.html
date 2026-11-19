@@ -1,4 +1,4 @@
 <!doctype html><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
 <title>영상통화 (태블릿)</title>
-<script>location.replace('/webcall/?c=' + (new URLSearchParams(location.search).get('code') || '2mz8hm9gcw') + '&r=a&f=1&v=' + Date.now());</script>
+<script>var q = new URLSearchParams(location.search); location.replace('/webcall/?c=' + (q.get('code') || '2mz8hm9gcw') + '&r=a&f=1' + (q.get('k') ? '&k=' + encodeURIComponent(q.get('k')) : '') + '&v=' + Date.now());</script>
 <p><a href="/webcall/?c=2mz8hm9gcw&r=a&f=1">영상통화 열기</a></p>
